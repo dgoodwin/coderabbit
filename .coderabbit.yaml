@@ -372,6 +372,84 @@ reviews:
           > /payload-job periodic-ci-openshift-release-main-nightly-4.22-e2e-metal-ovn-two-node-fencing-techpreview
           > ```
 
+      - name: "OTE Stdout Corruption Prevention"
+        mode: warning
+        instructions: |
+          When Ginkgo e2e test code is added or modified (files containing It(), Describe(),
+          Context(), When(), BeforeEach(), AfterEach(), BeforeSuite(), AfterSuite(), etc.),
+          check whether the code writes to stdout. This includes test helpers, utility
+          functions, and setup/teardown code in files that are part of a Ginkgo test suite.
+
+          **Why this matters:** OpenShift Tests Extension (OTE) binaries communicate with
+          `openshift-tests` via a JSON stream over stdout. Any non-JSON output written to
+          stdout — even a single warning character — corrupts this protocol and causes
+          100% reproducible failures in CI jobs. This has caused real payload-blocking
+          outages (e.g., Ginkgo v2 emitting a "W..." warning to stdout broke metal-ipi
+          nightly jobs).
+
+          Flag ANY of the following patterns in Ginkgo test code:
+
+          - `fmt.Print()`, `fmt.Println()`, `fmt.Printf()` — these write to stdout.
+            Use `fmt.Fprint(GinkgoWriter, ...)`, `fmt.Fprintln(GinkgoWriter, ...)`,
+            or `fmt.Fprintf(GinkgoWriter, ...)` instead.
+          - `os.Stdout` references — writing to or passing `os.Stdout` as an `io.Writer`.
+            Use `GinkgoWriter` instead.
+          - `log.Print()`, `log.Println()`, `log.Printf()` — the default logger writes
+            to stderr, but flag if a custom logger is configured with `os.Stdout`
+            (e.g., `log.New(os.Stdout, ...)`).
+          - `println()` — the built-in `println` writes to stderr, but `fmt.Println`
+            writes to stdout. Flag `fmt.Println`.
+          - Configuring Ginkgo v2 output to stdout explicitly (e.g.,
+            `ginkgo.GinkgoConfiguration` with stdout writers, or
+            `reporters` writing to `os.Stdout`).
+          - Using `os.Stdout` as a command's output target (e.g., `cmd.Stdout = os.Stdout`).
+            Use `GinkgoWriter` or a buffer instead.
+          - Passing `os.Stdout` to any function that accepts an `io.Writer`.
+
+          Do NOT flag:
+          - `fmt.Fprint(GinkgoWriter, ...)`, `fmt.Fprintln(GinkgoWriter, ...)`,
+            `fmt.Fprintf(GinkgoWriter, ...)` — these correctly use GinkgoWriter.
+          - `fmt.Sprintf()`, `fmt.Errorf()` — these return strings, not write to stdout.
+          - Writing to `os.Stderr` or `GinkgoWriter` — these are safe.
+          - `fmt.Fprintf(os.Stderr, ...)` — stderr is safe.
+          - Code that captures stdout of a subprocess being tested (e.g., reading from
+            a command's stdout pipe) — this is reading, not writing to the Go process's
+            own stdout.
+          - Non-Ginkgo test files (standard `func Test...` unit tests using `testing.T`
+            are not affected by OTE).
+
+          If a violation is flagged, recommend the following:
+
+          > **OTE stdout corruption risk:** Writing to stdout in Ginkgo test code will
+          > corrupt the JSON protocol between `openshift-tests` and OTE extension binaries,
+          > causing test listing and execution to fail in CI.
+          >
+          > Use `GinkgoWriter` instead of stdout for all test output:
+          >
+          > ```go
+          > // ❌ Breaks OTE — writes to stdout
+          > fmt.Println("creating test resources")
+          > fmt.Printf("pod %s created\n", podName)
+          >
+          > // ✅ Safe — uses GinkgoWriter
+          > fmt.Fprintln(GinkgoWriter, "creating test resources")
+          > fmt.Fprintf(GinkgoWriter, "pod %s created\n", podName)
+          > ```
+          >
+          > For commands or libraries that need an `io.Writer`, pass `GinkgoWriter`
+          > instead of `os.Stdout`:
+          >
+          > ```go
+          > // ❌ Breaks OTE
+          > cmd.Stdout = os.Stdout
+          >
+          > // ✅ Safe
+          > cmd.Stdout = GinkgoWriter
+          > ```
+          >
+          > `GinkgoWriter` is captured by the Ginkgo framework and only displayed when
+          > a test fails, keeping the stdout stream clean for OTE's JSON protocol.
+
       - name: "IPv6 and Disconnected Network Test Compatibility"
         mode: warning
         instructions: |
